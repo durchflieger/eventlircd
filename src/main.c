@@ -42,6 +42,7 @@
 #include "input.h"
 #include "lircd.h"
 #include "monitor.h"
+#include "lge.h"
 
 int main(int argc,char **argv)
 {
@@ -56,6 +57,10 @@ int main(int argc,char **argv)
         {"mode",required_argument,NULL,'m'},
         {"repeat-filter",no_argument,NULL,'R'},
         {"release",required_argument,NULL,'r'},
+        {"lircrc",required_argument,NULL,'C'},
+        {"lge-port",required_argument,NULL,'L'},
+        {"lge-on",required_argument,NULL,0x100},
+        {"lge-off",required_argument,NULL,0x101},
         {0, 0, 0, 0}
     };
     const char *progname = NULL;
@@ -67,12 +72,15 @@ int main(int argc,char **argv)
     bool input_repeat_filter = false;
     const char *lircd_release_suffix = NULL;
     int opt;
+    const char *lirc_client_config_file = NULL;
+    const char *lge_port = NULL, *lge_on = NULL, *lge_off = NULL;
+    int rc;
 
     for (progname = argv[0] ; strchr(progname, '/') != NULL ; progname = strchr(progname, '/') + 1);
 
     openlog(progname, LOG_CONS | LOG_PERROR | LOG_PID, LOG_DAEMON);
 
-    while((opt = getopt_long(argc, argv, "hVvfe:s:m:Rr:", longopts, NULL)) != -1)
+    while((opt = getopt_long(argc, argv, "hVvfe:s:m:Rr:C:L:", longopts, NULL)) != -1)
     {
         switch(opt)
         {
@@ -91,6 +99,10 @@ int main(int argc,char **argv)
 		fprintf(stdout, "    -R --repeat-filter     enable repeat filtering (default is '%s')\n",
                                                             input_repeat_filter ? "false" : "true");
 		fprintf(stdout, "    -r --release=<suffix>  generate key release events suffixed with <suffix>\n");
+		fprintf(stdout, "    -C --lircrc=<file>     lirc client config file\n");
+		fprintf(stdout, "    -L --lge-port=<path>   lge serial port device\n");
+		fprintf(stdout, "       --lge-on=<codes>    lge codes to switch tv on\n");
+		fprintf(stdout, "       --lge-off=<codes>   lge codes to switch tv off\n");
                 exit(EX_OK);
                 break;
             case 'V':
@@ -124,6 +136,18 @@ int main(int argc,char **argv)
             case 'r':
                 lircd_release_suffix = optarg;
                 break;
+            case 'C':
+                lirc_client_config_file = optarg;
+                break;
+            case 'L':
+                lge_port = optarg;
+                break;
+            case 0x100:
+                lge_on = optarg;
+                break;
+            case 0x101:
+                lge_off = optarg;
+                break;
             default:
                 fprintf(stderr, "error: unknown option: %c\n", opt);
                 exit(EX_USAGE);
@@ -156,7 +180,7 @@ int main(int argc,char **argv)
 
     /* Initialize the lircd socket before daemonizing in order to ensure that programs
        started after it damonizes will have an lircd socket with which to connect. */
-    if (lircd_init(lircd_socket_path, lircd_socket_mode, lircd_release_suffix) != 0)
+    if (lircd_init(lircd_socket_path, lircd_socket_mode, lircd_release_suffix, lirc_client_config_file) != 0)
     {
         monitor_exit();
         exit(EXIT_FAILURE);
@@ -172,30 +196,41 @@ int main(int argc,char **argv)
         }
     }
 
-    if (input_init(input_device_evmap_dir, input_repeat_filter) != 0)
+    rc = 0;
+
+    if (lge_port != NULL)
+	   rc = lge_init(lge_port);
+
+    if (lge_on != NULL)
+	rc = lge_send(lge_on);
+
+    if (rc == 0)
+    	rc = input_init(input_device_evmap_dir, input_repeat_filter);
+
+    if (rc == 0)
+   	rc = monitor_run();
+
+    if (rc == 0)
+	rc = input_exit();
+
+    if (rc == 0)
+        rc = monitor_exit();
+
+    if (rc == 0)
+        rc = lircd_exit();
+
+    if (rc == 0 && lge_off != NULL)
+	rc = lge_send(lge_off);
+
+    if (rc == 0)
+	rc = lge_exit();
+
+    if (rc == -1)
     {
+	input_exit();
         monitor_exit();
         lircd_exit();
-        exit(EXIT_FAILURE);
-    }
-
-    monitor_run();
-
-    if (input_exit() != 0)
-    {
-        monitor_exit();
-        lircd_exit();
-        exit(EXIT_FAILURE);
-    }
-
-    if (lircd_exit() != 0)
-    {
-        monitor_exit();
-        exit(EXIT_FAILURE);
-    }
-
-    if (monitor_exit() != 0)
-    {
+	lge_exit();
         exit(EXIT_FAILURE);
     }
 

@@ -35,11 +35,15 @@
  */
 #include <linux/input.h>  /* */
 #include <linux/limits.h> /* */
+
+#include <lirc_client.h>
+
 /*
  * eventlircd headers.
  */
 #include "lircd.h"
 #include "monitor.h"
+#include "lge.h"
 
 /*
  * The lircd_handler does not use the id parameter, so we need to let gcc's
@@ -71,12 +75,14 @@ struct {
 	mode_t mode;
 	char *release_suffix;
 	struct lircd_client *client_list;
+	struct lirc_config *lirc_client_config;
 } eventlircd_lircd = {
 	.fd = -1,
 	.path = NULL,
 	.mode = 0,
 	.release_suffix = NULL,
-	.client_list = NULL
+	.client_list = NULL,
+	.lirc_client_config = NULL
 };
 
 static int lircd_client_add()
@@ -192,10 +198,15 @@ int lircd_exit()
 		eventlircd_lircd.path = NULL;
 	}
 
+	if (eventlircd_lircd.lirc_client_config != NULL) {
+		lirc_freeconfig(eventlircd_lircd.lirc_client_config);
+		eventlircd_lircd.lirc_client_config = NULL;
+	}
+
 	return return_code;
 }
 
-int lircd_init(const char *path, mode_t mode, const char *release_suffix)
+int lircd_init(const char *path, mode_t mode, const char *release_suffix, const char *lirc_client_config_file)
 {
 	struct sockaddr_un addr;
 
@@ -217,6 +228,11 @@ int lircd_init(const char *path, mode_t mode, const char *release_suffix)
 		       strerror(errno));
 		return -1;
 	}
+
+    	if (lirc_client_config_file != NULL && lirc_readconfig_only(lirc_client_config_file, &eventlircd_lircd.lirc_client_config, NULL) == -1) {
+		syslog(LOG_ERR, "failed to read lirc config file %s\n", lirc_client_config_file);
+		return -1;
+    	}
 
 	if ((eventlircd_lircd.path = strndup(path, PATH_MAX)) == NULL) {
 		syslog(LOG_ERR,
@@ -296,6 +312,8 @@ int lircd_send(const struct input_event *event, const char *name, unsigned int r
 	char message[1000];
 	int message_len;
 	struct lircd_client *client;
+	char *cmd, *prog;
+	int forward;
 
 	if (event == NULL) {
 		errno = EINVAL;
@@ -335,6 +353,33 @@ int lircd_send(const struct input_event *event, const char *name, unsigned int r
 	}
 
 	if (message_len > 0) {
+		if (eventlircd_lircd.lirc_client_config != NULL) {
+			forward = 0;
+			for (;;) {
+				cmd = prog = NULL;
+				if (lirc_code2charprog(eventlircd_lircd.lirc_client_config, message, &cmd, &prog) == -1) {
+					errno = EINVAL;
+					return -1;
+				}
+				if (cmd == NULL) {
+					break;
+				}
+				if (forward == 0) {
+					forward = 1;
+				}
+				if (prog != NULL) {
+					if (strcmp(prog, "forward") == 0) {
+						forward = 2;
+					} else if (strcmp(prog, "lge") == 0) {
+						if (lge_send(cmd) == -1)
+							return -1;
+					}
+				}
+			}
+			if (forward == 1)
+				return 0;
+		}
+
 		for(client = eventlircd_lircd.client_list ; client != NULL ; client = client->next) {
 			if (write(client->fd, message, (size_t)message_len) != (ssize_t)message_len) {
 				if (lircd_client_close(client) != 0) {

@@ -28,7 +28,7 @@
  */
 #include <linux/input.h>  /* */
 
-int lircd_init(const char *path, mode_t mode, const char *release_suffix);
+int lircd_init(const char *path, mode_t mode, const char *release_suffix, const char *lirc_client_config_file);
 int lircd_exit();
 int lircd_send(const struct input_event *event, const char *name, unsigned int repeat_count, const char *remote);
 

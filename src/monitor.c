@@ -192,11 +192,6 @@ int monitor_run()
 
 	while (true) {
 		if (monitor_sigterm_active == true) {
-			input_exit();
-			lircd_exit();
-			monitor_exit();
-			signal(monitor_sigterm_signal, SIG_DFL);
-			raise(monitor_sigterm_signal);
 			return 0;
 		}
 
