@@ -201,7 +201,7 @@ int main(int argc,char **argv)
     if (lge_port != NULL)
 	   rc = lge_init(lge_port);
 
-    if (lge_on != NULL)
+    if (rc == 0 && lge_on != NULL)
 	rc = lge_send(lge_on);
 
     if (rc == 0)

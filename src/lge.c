@@ -18,7 +18,7 @@
 static int devfd = INVALID_DEV_HANDLE;
 static struct termios tio;
 
-enum { LGE_OK, LGE_UNKNOWN_CMD_ERR, LGE_NG_ERR, LGE_TIMEOUT_ERR, IO_ERROR };
+enum { LGE_OK, LGE_UNKNOWN_CMD_ERR, LGE_NG_ERR, LGE_TIMEOUT_ERR };
 
 static int lge_ret_code;
 static int lge_rx_state;
@@ -331,6 +331,11 @@ int lge_send(const char *seq) {
 
 			if (send_lge_cmd(v >> 8, (uint8_t)v) == -1)
 				return -1;
+
+			if (lge_ret_code != LGE_OK) {
+    				syslog(LOG_ERR, "lge command %x failed: %d\n", v, lge_ret_code);
+				break;
+			}
 
 			s = strtok_r(NULL, " ,", &p);
 		}
