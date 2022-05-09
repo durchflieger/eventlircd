@@ -354,6 +354,7 @@ int lircd_send(const struct input_event *event, const char *name, unsigned int r
 
 	if (message_len > 0) {
 		if (eventlircd_lircd.lirc_client_config != NULL) {
+			syslog(LOG_DEBUG, "lircd message: %s", message);
 			forward = 0;
 			for (;;) {
 				cmd = prog = NULL;
