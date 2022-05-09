@@ -1,0 +1,14 @@
+begin
+  remote = devinput
+  button = VOLUME_UP
+  prog   = lge
+  repeat = 1
+  config = 1B02
+end
+begin
+  remote = devinput
+  button = VOLUME_DOWN
+  prog   = lge
+  repeat = 1
+  config = 1B03
+end
