@@ -103,6 +103,7 @@ else
 fi
 
 PKG_CHECK_MODULES(LIBUDEV, [libudev >= 136])
+PKG_CHECK_MODULES(LIBLIRC, [lirc >= 0.10.1])
 
 AC_ARG_WITH(lircd-socket, AS_HELP_STRING([--with-lircd-socket=SOCKET], [lircd socket @<:@LOCALSTATEDIR/run/lirc/lircd@:>@]),
     [LIRCD_SOCKET="$withval"],

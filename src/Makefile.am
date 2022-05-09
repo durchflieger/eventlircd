@@ -1,7 +1,7 @@
 sbin_PROGRAMS = eventlircd
-eventlircd_SOURCES = main.c monitor.c monitor.h input.c input.h lircd.c lircd.h
-eventlircd_CFLAGS = $(AM_CFLAGS) $(LIBUDEV_CFLAGS) -DLIRCD_SOCKET=\"$(LIRCD_SOCKET)\" -DEVMAP_DIR=\"$(EVMAP_DIR)\"
-eventlircd_LDFLAGS = $(AM_CFLAGS) $(LIBUDEV_LIBS)
+eventlircd_SOURCES = main.c monitor.c monitor.h input.c input.h lircd.c lircd.h lge.c lge.h
+eventlircd_CFLAGS = $(AM_CFLAGS) $(LIBUDEV_CFLAGS) $(LIBLIRC_CFLAGS) -DLIRCD_SOCKET=\"$(LIRCD_SOCKET)\" -DEVMAP_DIR=\"$(EVMAP_DIR)\"
+eventlircd_LDFLAGS = $(AM_CFLAGS) $(LIBUDEV_LIBS) $(LIBLIRC_LIBS)
 
 nodist_eventlircd_SOURCES = event_name_to_code.h evkey_code_to_name.h evkey_type.h
 

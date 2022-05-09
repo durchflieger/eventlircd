@@ -8,9 +8,20 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/un.h>       /* XSI */
+#include <syslog.h>       /* XSI */
 
 #include "monitor.h"
 #include "lge.h"
+
+#ifdef UNUSED
+# error cannot define UNUSED because it is already defined
+#endif
+#if defined(__GNUC__)
+# define UNUSED(x) x __attribute__((unused))
+#else
+# define UNUSED(x) x
+#endif
 
 #define LGE_RX_START_TIMEOUT	6000000
 #define LGE_RX_TIMEOUT		1000000
@@ -20,14 +31,14 @@ static int devfd = -1;
 
 static int lge_rx_state;
 static int lge_cmd_ok;
-static timeval lge_timeout;
-static unsigned int lge_rx_value, lge_tx_value;
-static int lge_queue_in, lge_queue_out;
+static struct timeval lge_timeout;
+static unsigned int lge_cmd, lge_pause, lge_rx_value, lge_tx_value;
+static unsigned int lge_queue_in, lge_queue_out;
 static unsigned int lge_queue[LGE_QUEUE_SIZE];
 
 typedef struct {
-	uint8_t cmd1;
-	uint8_t cmd2;
+	char cmd1;
+	char cmd2;
 	unsigned int pause;
 } lge_cmd_t;
 
@@ -79,54 +90,28 @@ int lge_exit(void) {
 	return 0;
 }
 
-int lge_init(const char *devname) {
-	struct termios tio;
-
-	lge_queue_in = lge_queue_out = 0;
-	timerclear(&lge_timeout);
-
-	devfd = open(devname, O_WRONLY|O_NOCTTY);
-	if (devfd == -1) {
-		syslog(LOG_ERR, "could not open serial port device %s: %s\n", devname, strerror(errno));
-		return -1;
-	}
-
-	memset(&tio, 0, sizeof(tio));
-	tio.c_cflag = (CS8 | CSTOPB | CLOCAL);
-	cfsetospeed(&tio, B9600);
-	if (tcsetattr(devfd, TCSANOW, &tio) == -1) {
-		syslog(LOG_ERR, "setting configuration of serial port failed: %s\n", strerror(errno));
-		lge_exit();
-		return -1;
-	}
-
-	tcflush(devfd, TCIOFLUSH);
-
-	if (monitor_client_add(devfd, &lge_handler, NULL) != 0)
-		return -1;
-
-	return 0;
-}
-
 static void set_lge_timeout(struct timeval *now, unsigned int pause) {
 	struct timeval p;
 	p.tv_sec = pause / 1000000;
 	p.tv_usec = pause % 1000000;
 	timeradd(now, &p, &lge_timeout);
-	monitor_timeout(devfd, &t);
+	monitor_timeout(devfd, &p);
+    	syslog(LOG_DEBUG, "set lge timeout: %d\n", pause);
 }
 
 static int send_lge_telegram(struct timeval *now)
 {
-	uint8_t msg[10];
+	char msg[12];
 	snprintf(msg, sizeof(msg), "%c%c 00 %02X\r", lge_cmd_tab[lge_cmd].cmd1, lge_cmd_tab[lge_cmd].cmd2, (lge_pause > 0) ? 0x0FF : lge_tx_value);
 	if (write(devfd, msg, 9) == (ssize_t)-1) {
     		syslog(LOG_ERR, "writing data to serial port failed: %s\n", strerror(errno));
     		return -1;
 	}
+    	syslog(LOG_DEBUG, "send lge data: '%s'\n", msg);
 
 		// Prepare receiver for reply telegram
 	lge_rx_state = 1;
+	lge_cmd_ok = 0;
 	set_lge_timeout(now, LGE_RX_START_TIMEOUT);
 
 	return 0;
@@ -143,6 +128,11 @@ static int send_lge_cmd(struct timeval *now)
 	code = lge_queue[lge_queue_out];
 	lge_queue_out = (lge_queue_out + 1) % LGE_QUEUE_SIZE;
 
+	if (code == 0) {
+		monitor_sigterm_handler(0);
+		return 0;
+	}
+
 	lge_cmd = code >> 8;
 	lge_tx_value = code & 0x0FF;
 	lge_pause = lge_cmd_tab[lge_cmd].pause;
@@ -156,7 +146,7 @@ static int send_lge_cmd(struct timeval *now)
 	return send_lge_telegram(now);
 }
 
-static void process_lge_reply(uint8_t c)
+static void process_lge_reply(char c)
 {
 	int state = lge_rx_state;
 
@@ -205,18 +195,21 @@ static void process_lge_reply(uint8_t c)
 }
 
 static int lge_handler(void* UNUSED(id), int ready, struct timeval *now) {
-	uint8_t buf[100];
+	char msg[100];
 	ssize_t n, i;
+	struct timeval pause;
 
 	if (ready) {
-		n = read(devfd, &buf, sizeof(buf));
+		n = read(devfd, &msg, sizeof(msg)-1);
 		if (n == (ssize_t)-1) {
     			syslog(LOG_ERR, "reading data from serial port failed: %s\n", strerror(errno));
     			return -1;
 		}
+		msg[n] = 0;
+    		syslog(LOG_DEBUG, "read lge data: '%s'\n", msg);
 
 		for (i = 0; i < n; ++i)
-			process_lge_reply(buf[i]);
+			process_lge_reply(msg[i]);
 
 		if (lge_rx_state > 0) {
 			set_lge_timeout(now, LGE_RX_TIMEOUT);
@@ -224,29 +217,59 @@ static int lge_handler(void* UNUSED(id), int ready, struct timeval *now) {
 		}
 
 		if (!lge_cmd_ok) {
-    			syslog(LOG_ERR, "lge command failed: %x\n", lge_cmd);
+    			syslog(LOG_ERR, "lge command failed: %02X\n", lge_cmd);
 			lge_queue_in = lge_queue_out = 0;
 			return 0;
 		}
 
+    		syslog(LOG_DEBUG, "lge rx value: %02X\n", lge_rx_value);
+
 		if (lge_pause > 0) {
-			if (lge_tx_value != lge_rx_value)
-				return set_lge_timeout(now, lge_pause);
+			if (lge_tx_value != lge_rx_value) {
+				set_lge_timeout(now, lge_pause);
+				return 0;
+			}
 			lge_pause = 0;
 		}
 
 		return send_lge_cmd(now);
 	}
 
-	if ((lge_rx_state > 0 || lge_pause > 0) && timercmp(now, &lge_timeout, >)) {
-		if (lge_rx_state > 0) {
-    			syslog(LOG_ERR, "lge command timeout: %x\n", lge_cmd);
-			lge_queue_in = lge_queue_out = 0;
-			return 0;
+	if (lge_rx_state > 0 || lge_pause > 0) {
+		if (!timercmp(now, &lge_timeout, <)) {
+			if (lge_rx_state > 0) {
+    				syslog(LOG_ERR, "lge command timeout: %02X\n", lge_cmd);
+				lge_rx_state = 0;
+				lge_pause = 0;
+				lge_queue_in = lge_queue_out = 0;
+				return 0;
+			}
+			lge_pause = 0;
+			return send_lge_telegram(now);
 		}
-		lge_pause = 0;
-		return send_lge_telegram(now);
+		timersub(&lge_timeout, now, &pause);
+		monitor_timeout(devfd, &pause);
 	}
+
+	return 0;
+}
+
+int lge_push(unsigned int code) {
+	unsigned int i;
+
+	i = (lge_queue_in + 1) % LGE_QUEUE_SIZE;
+	if (i == lge_queue_out) {
+    		syslog(LOG_ERR, "lge command queue overflow\n");
+    		return -1;
+	}
+
+	if (code == 0 && lge_rx_state == 0) {
+    		syslog(LOG_ERR, "illegal empty lge off command sequence\n");
+    		return -1;
+	}
+
+	lge_queue[lge_queue_in] = code;
+	lge_queue_in = i;
 
 	return 0;
 }
@@ -260,24 +283,64 @@ int lge_send(const char *seq, struct timeval *now) {
 		s = strtok_r(strncpy(buf, seq, sizeof(buf)), " ,", &p);
 		while (s != NULL) {
 			if (sscanf(s, "%x", &code) != 1) {
-    				syslog(LOG_ERR, "illegal lge code: %s\n", seq);
+    				syslog(LOG_ERR, "illegal lge code: %s\n", s);
     				return -1;
 			}
 
 			i = code >> 8;
 			if (i >= LGE_NUM_CMDS || lge_cmd_tab[i].cmd1 == 0) {
-    				syslog(LOG_ERR, "illegal lge command: %s\n", seq);
+    				syslog(LOG_ERR, "illegal lge command: %s\n", s);
     				return -1;
 			}
 
-			i = (lge_queue_in + 1) % LGE_QUEUE_SIZE;
-			if (i != lge_queue_out) {
-				lge_queue[lge_queue_in] = code;
-				lge_queue_in = i;
-			}
+			if (lge_push(code) < 0)
+				return -1;
 
 			s = strtok_r(NULL, " ,", &p);
 		}
 	}
 	return send_lge_cmd(now);
 }
+
+int lge_init(const char *devname) {
+	struct termios tio;
+	int flags;
+
+	lge_rx_state = 0;
+	lge_pause = 0;
+	lge_queue_in = lge_queue_out = 0;
+	timerclear(&lge_timeout);
+
+	devfd = open(devname, O_RDWR|O_NOCTTY);
+	if (devfd == -1) {
+		syslog(LOG_ERR, "could not open serial port device %s: %s\n", devname, strerror(errno));
+		return -1;
+	}
+
+	if (tcgetattr(devfd, &tio) == -1) {
+		syslog(LOG_ERR, "getting configuration of serial port failed: %s\n", strerror(errno));
+		lge_exit();
+		return -1;
+	}
+	cfmakeraw(&tio);
+	tio.c_cflag |= (CS8 | CLOCAL | CREAD);
+	cfsetospeed(&tio, B9600);
+	tio.c_cc[VMIN] = 1;
+	tio.c_cc[VTIME] = 0;
+	if (tcsetattr(devfd, TCSANOW, &tio) == -1) {
+		syslog(LOG_ERR, "setting configuration of serial port failed: %s\n", strerror(errno));
+		lge_exit();
+		return -1;
+	}
+
+	tcflush(devfd, TCIOFLUSH);
+
+	flags = fcntl(devfd, F_GETFL);
+	fcntl(devfd, F_SETFL, flags | O_NONBLOCK);
+
+	if (monitor_client_add(devfd, &lge_handler, NULL) != 0)
+		return -1;
+
+	return 0;
+}
+

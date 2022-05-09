@@ -201,11 +201,11 @@ int main(int argc,char **argv)
     if (lge_port != NULL)
 	   rc = lge_init(lge_port);
 
-    if (rc == 0 && lge_on != NULL)
-	rc = lge_send(lge_on);
-
     if (rc == 0)
     	rc = input_init(input_device_evmap_dir, input_repeat_filter);
+
+    if (rc == 0 && lge_on != NULL)
+	rc = lge_send(lge_on, NULL);
 
     if (rc == 0)
    	rc = monitor_run();
@@ -213,14 +213,19 @@ int main(int argc,char **argv)
     if (rc == 0)
 	rc = input_exit();
 
+    if (rc == 0 && lge_off != NULL) {
+	rc = lge_send(lge_off, NULL);
+    	if (rc == 0)
+		rc = lge_push(0);
+    	if (rc == 0)
+   		rc = monitor_run();
+    }
+
     if (rc == 0)
         rc = monitor_exit();
 
     if (rc == 0)
         rc = lircd_exit();
-
-    if (rc == 0 && lge_off != NULL)
-	rc = lge_send(lge_off);
 
     if (rc == 0)
 	rc = lge_exit();

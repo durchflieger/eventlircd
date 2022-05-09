@@ -27,6 +27,7 @@ int monitor_client_add(int fd, int (*handler)(void *id, int ready, struct timeva
 int monitor_client_remove(int fd);
 void monitor_timeout(int fd, struct timeval *timeout);
 int monitor_now(struct timeval *time);
+void monitor_sigterm_handler(int signal);
 int monitor_run();
 
 #endif

@@ -120,7 +120,7 @@ static int lircd_client_add()
 	return 0;
 }
 
-static int lircd_handler(void* UNUSED(id))
+static int lircd_handler(void* UNUSED(id), int UNUSED(ready), struct timeval* UNUSED(now))
 {
 	if (lircd_client_add() != 0) {
 		return -1;
@@ -371,7 +371,7 @@ int lircd_send(const struct input_event *event, const char *name, unsigned int r
 					if (strcmp(prog, "forward") == 0) {
 						forward = 2;
 					} else if (strcmp(prog, "lge") == 0) {
-						if (lge_send(cmd) == -1)
+						if (lge_send(cmd, NULL) == -1)
 							return -1;
 					}
 				}

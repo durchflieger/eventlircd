@@ -63,6 +63,7 @@ static int monitor_client_close(struct monitor_client *client)
 	client->fd = -1;
 	client->handler = NULL;
 	client->id = NULL;
+	timerclear(&client->timeout);
 
 	return 0;
 }
@@ -136,6 +137,7 @@ int monitor_client_add(int fd, int (*handler)(void *id, int ready, struct timeva
 	client->fd = fd;
 	client->handler = handler;
 	client->id = id;
+	timerclear(&client->timeout);
 
 	client->next = eventlircd_monitor.client_list;
 	eventlircd_monitor.client_list = client;
@@ -165,12 +167,12 @@ int monitor_exit()
 int monitor_init()
 {
 	eventlircd_monitor.client_list = NULL;
-	timerclear(&timeout);
-
 	return 0;
 }
 
 void monitor_timeout(int fd, struct timeval *timeout) {
+	struct monitor_client *client;
+
 	for (client = eventlircd_monitor.client_list ; client != NULL ; client = client->next) {
 		if (client->fd == fd) {
 			if (!timerisset(&client->timeout) || timercmp(&client->timeout, timeout, >))
@@ -180,7 +182,7 @@ void monitor_timeout(int fd, struct timeval *timeout) {
 	}
 }
 
-static void monitor_sigterm_handler(int signal)
+void monitor_sigterm_handler(int signal)
 {
 	if (monitor_sigterm_active == true) {
 		return;
@@ -205,6 +207,7 @@ int monitor_run()
 	int nfds;
 	struct timeval timeout, now;
 
+	monitor_sigterm_active = false;
 	signal_action.sa_handler = monitor_sigterm_handler;
 	sigfillset(&signal_action.sa_mask);
 	signal_action.sa_flags=SA_RESTART;

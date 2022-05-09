@@ -1163,7 +1163,7 @@ static bool input_device_event_is_key(struct input_device *device)
 	return true;
 }
 
-static int input_device_handler(void *id)
+static int input_device_handler(void *id, int UNUSED(ready), struct timeval* UNUSED(now))
 {
 	struct input_device *device;
 	struct input_event event;
@@ -2018,7 +2018,7 @@ static int input_device_add(struct udev_device *udev_device)
 	return 0;
 }
 
-static int input_handler(void* UNUSED(id))
+static int input_handler(void* UNUSED(id), int UNUSED(ready), struct timeval* UNUSED(now))
 {
 	struct udev_device *udev_device;
 	const char *action;
