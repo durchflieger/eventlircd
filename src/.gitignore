@@ -1,0 +1,13 @@
+# ---
+# GIT ignore file
+#
+
+# VIM Editor files
+*~
+*.swp
+
+# Logfiles
+*.log
+
+# General backup files
+*.bak

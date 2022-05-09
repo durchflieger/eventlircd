@@ -19,10 +19,14 @@
 #ifndef _EVENTLIRCD_MONITOR_H_
 #define _EVENTLIRCD_MONITOR_H_ 1
 
+#include <sys/time.h>
+
 int monitor_init();
 int monitor_exit();
-int monitor_client_add(int fd, int (*handler)(void *id), void *id);
+int monitor_client_add(int fd, int (*handler)(void *id, int ready, struct timeval *now), void *id);
 int monitor_client_remove(int fd);
+void monitor_timeout(int fd, struct timeval *timeout);
+int monitor_now(struct timeval *time);
 int monitor_run();
 
 #endif

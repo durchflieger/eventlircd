@@ -8,23 +8,22 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <time.h>
-#include <sys/time.h>
 
-#define INVALID_DEV_HANDLE      -1
-#define LGE_RX_START_TIMEOUT	60
-#define LGE_RX_TIMEOUT		10
+#include "monitor.h"
+#include "lge.h"
 
-static int devfd = INVALID_DEV_HANDLE;
-static struct termios tio;
+#define LGE_RX_START_TIMEOUT	6000000
+#define LGE_RX_TIMEOUT		1000000
+#define LGE_QUEUE_SIZE		128
 
-enum { LGE_OK, LGE_UNKNOWN_CMD_ERR, LGE_NG_ERR, LGE_TIMEOUT_ERR };
+static int devfd = -1;
 
-static int lge_ret_code;
 static int lge_rx_state;
-static timeval lge_pause_time;
-static uint8_t lge_rx_cmd2;
-static uint8_t lge_rx_value;
+static int lge_cmd_ok;
+static timeval lge_timeout;
+static unsigned int lge_rx_value, lge_tx_value;
+static int lge_queue_in, lge_queue_out;
+static unsigned int lge_queue[LGE_QUEUE_SIZE];
 
 typedef struct {
 	uint8_t cmd1;
@@ -67,26 +66,33 @@ static lge_cmd_t lge_cmd_tab[LGE_NUM_CMDS] = {
 };
 
 int lge_exit(void) {
-	if (devfd != INVALID_DEV_HANDLE) {
+	if (devfd != -1) {
+		if (monitor_client_remove(devfd) != 0)
+			return -1;
+
 		if (close(devfd) == -1) {
 			syslog(LOG_ERR, "closing serial port failed: %s\n", strerror(errno));
 			return -1;
 		}
-		devfd = INVALID_DEV_HANDLE;
+		devfd = -1;
 	}
 	return 0;
 }
 
 int lge_init(const char *devname) {
+	struct termios tio;
+
+	lge_queue_in = lge_queue_out = 0;
+	timerclear(&lge_timeout);
+
 	devfd = open(devname, O_WRONLY|O_NOCTTY);
-	if (devfd == INVALID_DEV_HANDLE) {
+	if (devfd == -1) {
 		syslog(LOG_ERR, "could not open serial port device %s: %s\n", devname, strerror(errno));
 		return -1;
 	}
 
 	memset(&tio, 0, sizeof(tio));
 	tio.c_cflag = (CS8 | CSTOPB | CLOCAL);
-	tio.c_cc[VTIME] = LGE_RX_START_TIMEOUT;
 	cfsetospeed(&tio, B9600);
 	if (tcsetattr(devfd, TCSANOW, &tio) == -1) {
 		syslog(LOG_ERR, "setting configuration of serial port failed: %s\n", strerror(errno));
@@ -94,84 +100,68 @@ int lge_init(const char *devname) {
 		return -1;
 	}
 
-	if (tcgetattr(devfd, &tio) == -1) {
-		syslog(LOG_ERR, "getting configuration of serial port failed: %s\n", strerror(errno));
-		lge_exit();
-		return -1;
-	}
-
 	tcflush(devfd, TCIOFLUSH);
-	timerclear(&lge_pause_time);
-}
 
-static int get_now(struct timeval *time) {
-	if (gettimeofday(time, NULL) == -1) {
-    		syslog(LOG_ERR, "getting time of day failed: %s\n", strerror(errno));
-    		return -1;
-	}
+	if (monitor_client_add(devfd, &lge_handler, NULL) != 0)
+		return -1;
+
 	return 0;
 }
 
-static int do_sleep(struct timeval *time) {
-	struct timespec t;
-	t.tv_sec = time.tv_sec;
-	t.tv_nsec = time.tv_usec * 1000;
-	if (nanosleep(&t, NULL) == -1) {
-		if (errno != EINTR)
-    			syslog(LOG_ERR, "nanosleep failed: %s\n", strerror(errno));
-    		return -1;
-	}
-	return 0;
+static void set_lge_timeout(struct timeval *now, unsigned int pause) {
+	struct timeval p;
+	p.tv_sec = pause / 1000000;
+	p.tv_usec = pause % 1000000;
+	timeradd(now, &p, &lge_timeout);
+	monitor_timeout(devfd, &t);
 }
 
-static int set_read_timeout(cc_t t) {
-	if (tio.c_cc[VTIME] != t) {
-		tio.c_cc[VTIME] = t;
-  		if (tcsetattr(devfd, TCSANOW, &tio) == -1) {
-    			syslog(LOG_ERR, "setting configuration of serial port failed: %s\n", strerror(errno));
-    			return -1;
-		}
-	}
-	return 0;
-}
-
-static int usart_send(uint8_t c) {
-	if (write(devfd, &c, 1) == (ssize_t)-1) {
+static int send_lge_telegram(struct timeval *now)
+{
+	uint8_t msg[10];
+	snprintf(msg, sizeof(msg), "%c%c 00 %02X\r", lge_cmd_tab[lge_cmd].cmd1, lge_cmd_tab[lge_cmd].cmd2, (lge_pause > 0) ? 0x0FF : lge_tx_value);
+	if (write(devfd, msg, 9) == (ssize_t)-1) {
     		syslog(LOG_ERR, "writing data to serial port failed: %s\n", strerror(errno));
     		return -1;
 	}
+
+		// Prepare receiver for reply telegram
+	lge_rx_state = 1;
+	set_lge_timeout(now, LGE_RX_START_TIMEOUT);
+
 	return 0;
 }
 
-static int usart_drain(void) {
-	if (tcdrain(devfd) == -1) {
-    		syslog(LOG_ERR, "draining data to serial port failed: %s\n", strerror(errno));
-    		return -1;
-	}
-	return 0;
-}
-
-static int read_lge_reply(void)
+static int send_lge_cmd(struct timeval *now)
 {
-	uint8_t c;
-	ssize_t n = read(devfd, &c, 1);
-	if (n == (ssize_t)-1) {
-    		syslog(LOG_ERR, "reading data from serial port failed: %s\n", strerror(errno));
-    		return -1;
+	unsigned int code;
+	struct timeval t;
+
+	if (lge_rx_state != 0 || lge_queue_in == lge_queue_out)
+		return 0;
+
+	code = lge_queue[lge_queue_out];
+	lge_queue_out = (lge_queue_out + 1) % LGE_QUEUE_SIZE;
+
+	lge_cmd = code >> 8;
+	lge_tx_value = code & 0x0FF;
+	lge_pause = lge_cmd_tab[lge_cmd].pause;
+
+	if (now == NULL) {
+		now = &t;
+		if (monitor_now(now) < 0)
+			return -1;
 	}
 
+	return send_lge_telegram(now);
+}
+
+static void process_lge_reply(uint8_t c)
+{
 	int state = lge_rx_state;
 
-	if (n == (ssize_t)0) {
-		lge_ret_code = LGE_TIMEOUT_ERR;
-		state = 0;
-	} else {
-		if (set_read_timeout(LGE_RX_TIMEOUT) == -1)
-    			return -1;
-	}
-
 	if (state == 1) {
-		if (c == lge_rx_cmd2)
+		if (c == lge_cmd_tab[lge_cmd].cmd2)
 			state = 2;	// Start of telegram
 	} else if (state == 6) {
 		if (c == 'N' || c == 'O')
@@ -180,10 +170,10 @@ static int read_lge_reply(void)
 			state = 1;
 	} else if (state == 7) {
 		if (c == 'G') {
-			lge_ret_code = LGE_NG_ERR;
+			lge_cmd_ok = 0;
 			state = 8;
 		} else if (c == 'K') {
-			lge_ret_code = LGE_OK;
+			lge_cmd_ok = 1;
 			state = 8;
 		} else
 			state = 1;
@@ -205,140 +195,89 @@ static int read_lge_reply(void)
 			state = 10;
 		} else
 			state = 1;
-	} else if (state == 12)
+	} else if (state == 12) {
 		state = 0;	// end of telegram
-	else if (state)
+	} else if (state) {
 		++state;
+	}
 
 	lge_rx_state = state;
-	return 0;
 }
 
-static int send_lge_telegram(uint8_t c1, uint8_t c2, uint8_t v, unsigned int p)
-{
-	uint8_t c;
-	struct timeval now, pause;
+static int lge_handler(void* UNUSED(id), int ready, struct timeval *now) {
+	uint8_t buf[100];
+	ssize_t n, i;
 
-	if (timerisset(&lge_pause_time)) {
-		if (get_now(&now) == -1)
-			return -1;
-		if (timercmp(&lge_pause_time, &now, >)) {
-			timersub(&lge_pause_time, &now, &pause);
-			if (do_sleep(&pause) == -1)
-				return -1;
+	if (ready) {
+		n = read(devfd, &buf, sizeof(buf));
+		if (n == (ssize_t)-1) {
+    			syslog(LOG_ERR, "reading data from serial port failed: %s\n", strerror(errno));
+    			return -1;
 		}
-		timerclear(&lge_pause_time);
-	}
 
-		// Prepare receiver for reply telegram
-	lge_rx_cmd2 = c2;
-	lge_rx_state = 1;
-	if (set_read_timeout(LGE_RX_START_TIMEOUT) == -1)
-		return -1;
+		for (i = 0; i < n; ++i)
+			process_lge_reply(buf[i]);
 
-		// Send command telegram
-	if (usart_send(c1) == -1)
-		return -1;
-	if (usart_send(c2) == -1)
-		return -1;
-	if (usart_send(' ') == -1)
-		return -1;
-	if (usart_send('0') == -1)
-		return -1;
-	if (usart_send('0') == -1)
-		return -1;
-	if (usart_send(' ') == -1)
-		return -1;
-	c = v >> 4;
-	if (c > 9)
-		c += 'A' - 10;
-	else
-		c += '0';
-	if (usart_send(c) == -1)
-		return -1;
-	c = v & 0x0F;
-	if (c > 9)
-		c += 'A' - 10;
-	else
-		c += '0';
-	if (usart_send(c) == -1)
-		return -1;
-	if (usart_send('\r') == -1)
-		return -1;
-
-	if (usart_drain() == -1)
-		return -1;
-	
-		// Wait for reply telegram
-	while (lge_rx_state) {
-		if (read_lge_reply() == -1)
-			return -1;
-	}
-
-
-	if (p > 0 && lge_ret_code == LGE_OK && v != 0xFF) {
-		if (get_now(&now) == -1)
-			return -1;
-		pause.tv_sec = p / 1000000;
-		pause.tv_usec = p % 1000000;
-		timeradd(&now, &pause, &lge_pause_time);
-	} else {
-		timerclear(&lge_pause_time);
-	}
-
-	return 0;
-}
-
-static int send_lge_cmd(unsigned int cmd, uint8_t v)
-{
-	uint8_t c1, c2;
-	unsigned int p;
-
-	lge_ret_code = LGE_UNKNOWN_CMD_ERR;
-	if (cmd < LGE_NUM_CMDS && (c1 = lge_cmd_tab[cmd].cmd1))
-	{
-		c2 = lge_cmd_tab[cmd].cmd2;
-		p = lge_cmd_tab[cmd].pause;
-
-		if (p > 0 && v != 0xFF)
-		{		// Check current status before sending command with pause time
-			if (send_lge_telegram(c1, c2, 0xFF, p) == -1)
-				return -1;
-			if (lge_ret_code == LGE_OK && lge_rx_value != v) {
-				if (send_lge_telegram(c1, c2, v, p) == -1)
-					return -1;
-			}
-		} else {
-			if (send_lge_telegram(c1, c2, v, p) == -1)
-				return -1;
+		if (lge_rx_state > 0) {
+			set_lge_timeout(now, LGE_RX_TIMEOUT);
+			return 0;
 		}
+
+		if (!lge_cmd_ok) {
+    			syslog(LOG_ERR, "lge command failed: %x\n", lge_cmd);
+			lge_queue_in = lge_queue_out = 0;
+			return 0;
+		}
+
+		if (lge_pause > 0) {
+			if (lge_tx_value != lge_rx_value)
+				return set_lge_timeout(now, lge_pause);
+			lge_pause = 0;
+		}
+
+		return send_lge_cmd(now);
 	}
+
+	if ((lge_rx_state > 0 || lge_pause > 0) && timercmp(now, &lge_timeout, >)) {
+		if (lge_rx_state > 0) {
+    			syslog(LOG_ERR, "lge command timeout: %x\n", lge_cmd);
+			lge_queue_in = lge_queue_out = 0;
+			return 0;
+		}
+		lge_pause = 0;
+		return send_lge_telegram(now);
+	}
+
 	return 0;
 }
 
-int lge_send(const char *seq) {
+int lge_send(const char *seq, struct timeval *now) {
 	char *s, *p;
 	char buf[100];
-	unsigned int v;
+	unsigned int code, i;
 
-	if (seq != NULL && devfd != INVALID_DEV_HANDLE) {
+	if (seq != NULL && devfd != -1) {
 		s = strtok_r(strncpy(buf, seq, sizeof(buf)), " ,", &p);
 		while (s != NULL) {
-			if (sscanf(s, "%x", &v) != 1) {
-    				syslog(LOG_ERR, "processing code sequence failed: %s\n", seq);
+			if (sscanf(s, "%x", &code) != 1) {
+    				syslog(LOG_ERR, "illegal lge code: %s\n", seq);
     				return -1;
 			}
 
-			if (send_lge_cmd(v >> 8, (uint8_t)v) == -1)
-				return -1;
+			i = code >> 8;
+			if (i >= LGE_NUM_CMDS || lge_cmd_tab[i].cmd1 == 0) {
+    				syslog(LOG_ERR, "illegal lge command: %s\n", seq);
+    				return -1;
+			}
 
-			if (lge_ret_code != LGE_OK) {
-    				syslog(LOG_ERR, "lge command %x failed: %d\n", v, lge_ret_code);
-				break;
+			i = (lge_queue_in + 1) % LGE_QUEUE_SIZE;
+			if (i != lge_queue_out) {
+				lge_queue[lge_queue_in] = code;
+				lge_queue_in = i;
 			}
 
 			s = strtok_r(NULL, " ,", &p);
 		}
 	}
-	return 0;
+	return send_lge_cmd(now);
 }

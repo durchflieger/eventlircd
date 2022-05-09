@@ -38,8 +38,9 @@
 
 struct monitor_client {
 	int fd;
-	int (*handler)(void *id);
+	int (*handler)(void *id, int ready, struct timeval *now);
 	void *id;
+	struct timeval timeout;
 	struct monitor_client *next;
 };
 
@@ -112,7 +113,7 @@ int monitor_client_remove(int fd)
 	return return_code;
 }
 
-int monitor_client_add(int fd, int (*handler)(void *id), void *id)
+int monitor_client_add(int fd, int (*handler)(void *id, int ready, struct timeval *now), void *id)
 {
 	struct monitor_client *client;
 
@@ -164,8 +165,19 @@ int monitor_exit()
 int monitor_init()
 {
 	eventlircd_monitor.client_list = NULL;
+	timerclear(&timeout);
 
 	return 0;
+}
+
+void monitor_timeout(int fd, struct timeval *timeout) {
+	for (client = eventlircd_monitor.client_list ; client != NULL ; client = client->next) {
+		if (client->fd == fd) {
+			if (!timerisset(&client->timeout) || timercmp(&client->timeout, timeout, >))
+				client->timeout = *timeout;
+			break;
+		}
+	}
 }
 
 static void monitor_sigterm_handler(int signal)
@@ -177,12 +189,21 @@ static void monitor_sigterm_handler(int signal)
 	monitor_sigterm_signal = signal;
 }
 
+int monitor_now(struct timeval *time) {
+	if (gettimeofday(time, NULL) == -1) {
+    		syslog(LOG_ERR, "getting time of day failed: %s\n", strerror(errno));
+    		return -1;
+	}
+	return 0;
+}
+
 int monitor_run()
 {
 	struct sigaction signal_action;
 	struct monitor_client *client;
 	fd_set fdset;
 	int nfds;
+	struct timeval timeout, now;
 
 	signal_action.sa_handler = monitor_sigterm_handler;
 	sigfillset(&signal_action.sa_mask);
@@ -192,11 +213,12 @@ int monitor_run()
 
 	while (true) {
 		if (monitor_sigterm_active == true) {
-			return 0;
+			break;
 		}
 
 		FD_ZERO(&fdset);
 		nfds = 0;
+		timerclear(&timeout);
 		for (client = eventlircd_monitor.client_list ; client != NULL ; client = client->next) {
 			if (client->fd < 0) {
 				continue;
@@ -205,24 +227,29 @@ int monitor_run()
 			if (nfds < client->fd) {
 				nfds = client->fd;
 			}
+			if (timerisset(&client->timeout) && (!timerisset(&timeout) || timercmp(&timeout, &client->timeout, >)))
+				timeout = client->timeout;
 		}
 		nfds++;
 
-		if (select(nfds, &fdset, NULL, NULL, NULL) < 0) {
+		if (select(nfds, &fdset, NULL, NULL, timerisset(&timeout) ? &timeout : NULL) < 0) {
 			if (errno == EINTR) {
 				continue;
 			}
 			return -1;
 		}
 
+		if (monitor_now(&now) < 0)
+			return -1;
+
 		for (client = eventlircd_monitor.client_list ; client != NULL ; client = client->next) {
 			if (client->fd == -1) {
 				continue;
 			}
-			if (FD_ISSET(client->fd, &fdset) == 0) {
-				continue;
+			if (FD_ISSET(client->fd, &fdset) || timerisset(&client->timeout)) {
+				timerclear(&client->timeout);
+				client->handler(client->id, FD_ISSET(client->fd, &fdset), &now);
 			}
-			client->handler(client->id);
 		}
 	}
 	return 0;
