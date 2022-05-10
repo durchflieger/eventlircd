@@ -324,7 +324,7 @@ int lge_init(const char *devname) {
 	}
 	cfmakeraw(&tio);
 	tio.c_cflag |= (CS8 | CLOCAL | CREAD);
-	cfsetospeed(&tio, B9600);
+	cfsetspeed(&tio, B9600);
 	tio.c_cc[VMIN] = 1;
 	tio.c_cc[VTIME] = 0;
 	if (tcsetattr(devfd, TCSANOW, &tio) == -1) {
