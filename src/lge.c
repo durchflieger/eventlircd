@@ -99,10 +99,10 @@ static void set_lge_timeout(struct timeval *now, unsigned int pause) {
     	syslog(LOG_DEBUG, "set lge timeout: %d\n", pause);
 }
 
-static int send_lge_telegram(struct timeval *now)
+static int send_lge_telegram(struct timeval *now, unsigned int value)
 {
 	char msg[12];
-	snprintf(msg, sizeof(msg), "%c%c 00 %02X\r", lge_cmd_tab[lge_cmd].cmd1, lge_cmd_tab[lge_cmd].cmd2, (lge_pause > 0) ? 0x0FF : lge_tx_value);
+	snprintf(msg, sizeof(msg), "%c%c 00 %02X\r", lge_cmd_tab[lge_cmd].cmd1, lge_cmd_tab[lge_cmd].cmd2, value);
 	if (write(devfd, msg, 9) == (ssize_t)-1) {
     		syslog(LOG_ERR, "writing data to serial port failed: %s\n", strerror(errno));
     		return -1;
@@ -143,7 +143,7 @@ static int send_lge_cmd(struct timeval *now)
 			return -1;
 	}
 
-	return send_lge_telegram(now);
+	return send_lge_telegram(now, (lge_pause > 0) ? 0x0FF : lge_tx_value);
 }
 
 static void process_lge_reply(char c)
@@ -226,10 +226,10 @@ static int lge_handler(void* UNUSED(id), int ready, struct timeval *now) {
 
 		if (lge_pause > 0) {
 			if (lge_tx_value != lge_rx_value) {
-				set_lge_timeout(now, lge_pause);
-				return 0;
+				return send_lge_telegram(now, lge_tx_value);
 			}
-			lge_pause = 0;
+			set_lge_timeout(now, lge_pause);
+			return 0;
 		}
 
 		return send_lge_cmd(now);
@@ -245,7 +245,7 @@ static int lge_handler(void* UNUSED(id), int ready, struct timeval *now) {
 				return 0;
 			}
 			lge_pause = 0;
-			return send_lge_telegram(now);
+			return send_lge_cmd(now);
 		}
 		timersub(&lge_timeout, now, &pause);
 		monitor_timeout(devfd, &pause);
@@ -302,7 +302,7 @@ int lge_send(const char *seq, struct timeval *now) {
 	return send_lge_cmd(now);
 }
 
-int lge_init(const char *devname) {
+int lge_init(const char *devname, int retry) {
 	struct termios tio;
 	int flags;
 
@@ -311,7 +311,14 @@ int lge_init(const char *devname) {
 	lge_queue_in = lge_queue_out = 0;
 	timerclear(&lge_timeout);
 
-	devfd = open(devname, O_RDWR|O_NOCTTY);
+	for (;;) {
+		devfd = open(devname, O_RDWR|O_NOCTTY);
+		if (devfd != -1 || retry <= 0)
+			break;
+		if (usleep(100000) == -1)
+			return -1;
+		--retry;
+	}
 	if (devfd == -1) {
 		syslog(LOG_ERR, "could not open serial port device %s: %s\n", devname, strerror(errno));
 		return -1;

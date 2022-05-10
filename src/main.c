@@ -61,6 +61,7 @@ int main(int argc,char **argv)
         {"lge-port",required_argument,NULL,'L'},
         {"lge-on",required_argument,NULL,0x100},
         {"lge-off",required_argument,NULL,0x101},
+        {"lge-open-retry",required_argument,NULL,0x102},
         {0, 0, 0, 0}
     };
     const char *progname = NULL;
@@ -74,6 +75,7 @@ int main(int argc,char **argv)
     int opt;
     const char *lirc_client_config_file = NULL;
     const char *lge_port = NULL, *lge_on = NULL, *lge_off = NULL;
+    int lge_open_retry = 0;
     int rc;
 
     for (progname = argv[0] ; strchr(progname, '/') != NULL ; progname = strchr(progname, '/') + 1);
@@ -101,8 +103,9 @@ int main(int argc,char **argv)
 		fprintf(stdout, "    -r --release=<suffix>  generate key release events suffixed with <suffix>\n");
 		fprintf(stdout, "    -C --lircrc=<file>     lirc client config file\n");
 		fprintf(stdout, "    -L --lge-port=<path>   lge serial port device\n");
-		fprintf(stdout, "       --lge-on=<codes>    lge codes to switch tv on\n");
-		fprintf(stdout, "       --lge-off=<codes>   lge codes to switch tv off\n");
+		fprintf(stdout, "    --lge-on=<codes>       lge codes to switch tv on\n");
+		fprintf(stdout, "    --lge-off=<codes>      lge codes to switch tv off\n");
+		fprintf(stdout, "    --lge-open-retry=<n>   retry port open every 100ms\n");
                 exit(EX_OK);
                 break;
             case 'V':
@@ -147,6 +150,9 @@ int main(int argc,char **argv)
                 break;
             case 0x101:
                 lge_off = optarg;
+                break;
+            case 0x102:
+                lge_open_retry = atoi(optarg);
                 break;
             default:
                 fprintf(stderr, "error: unknown option: %c\n", opt);
@@ -199,7 +205,7 @@ int main(int argc,char **argv)
     rc = 0;
 
     if (lge_port != NULL)
-	   rc = lge_init(lge_port);
+	   rc = lge_init(lge_port, lge_open_retry);
 
     if (rc == 0)
     	rc = input_init(input_device_evmap_dir, input_repeat_filter);
