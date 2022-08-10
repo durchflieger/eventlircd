@@ -1,5 +1,5 @@
-#ifndef _EVENTLIRCD_LGE_H_
-#define _EVENTLIRCD_LGE_H_ 1
+#ifndef _LGE_H_
+#define _LGE_H_ 1
 
 #include <sys/time.h>
 

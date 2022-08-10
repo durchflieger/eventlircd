@@ -44,6 +44,7 @@
 #include "lircd.h"
 #include "monitor.h"
 #include "lge.h"
+#include "txir.h"
 
 /*
  * The lircd_handler does not use the id parameter, so we need to let gcc's
@@ -371,8 +372,14 @@ int lircd_send(const struct input_event *event, const char *name, unsigned int r
 				if (prog != NULL) {
 					if (strcmp(prog, "forward") == 0) {
 						forward = 2;
+					} else if (strcmp(prog, "txir") == 0) {
+						if (txir_send(cmd) == -1)
+							return -1;
 					} else if (strcmp(prog, "lge") == 0) {
 						if (lge_send(cmd, NULL) == -1)
+							return -1;
+					} else if (strcmp(prog, "sh") == 0) {
+						if (system(cmd) == -1)
 							return -1;
 					}
 				}

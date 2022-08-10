@@ -43,6 +43,7 @@
 #include "lircd.h"
 #include "monitor.h"
 #include "lge.h"
+#include "txir.h"
 
 int main(int argc,char **argv)
 {
@@ -62,6 +63,7 @@ int main(int argc,char **argv)
         {"lge-on",required_argument,NULL,0x100},
         {"lge-off",required_argument,NULL,0x101},
         {"lge-open-retry",required_argument,NULL,0x102},
+        {"txir",required_argument,NULL,'T'},
         {0, 0, 0, 0}
     };
     const char *progname = NULL;
@@ -76,13 +78,14 @@ int main(int argc,char **argv)
     const char *lirc_client_config_file = NULL;
     const char *lge_port = NULL, *lge_on = NULL, *lge_off = NULL;
     int lge_open_retry = 0;
+    const char *txir = NULL;
     int rc;
 
     for (progname = argv[0] ; strchr(progname, '/') != NULL ; progname = strchr(progname, '/') + 1);
 
     openlog(progname, LOG_CONS | LOG_PERROR | LOG_PID, LOG_DAEMON);
 
-    while((opt = getopt_long(argc, argv, "hVvfe:s:m:Rr:C:L:", longopts, NULL)) != -1)
+    while((opt = getopt_long(argc, argv, "hVvfe:s:m:Rr:C:L:T:", longopts, NULL)) != -1)
     {
         switch(opt)
         {
@@ -106,6 +109,7 @@ int main(int argc,char **argv)
 		fprintf(stdout, "    --lge-on=<codes>       lge codes to switch tv on\n");
 		fprintf(stdout, "    --lge-off=<codes>      lge codes to switch tv off\n");
 		fprintf(stdout, "    --lge-open-retry=<n>   retry port open every 100ms\n");
+		fprintf(stdout, "    -T --txir=<path>       txir socket path\n");
                 exit(EX_OK);
                 break;
             case 'V':
@@ -204,6 +208,8 @@ int main(int argc,char **argv)
 
     rc = 0;
 
+    txir_init(txir);
+
     if (lge_port != NULL)
 	   rc = lge_init(lge_port, lge_open_retry);
 
@@ -236,12 +242,16 @@ int main(int argc,char **argv)
     if (rc == 0)
 	rc = lge_exit();
 
+    if (rc == 0)
+	rc = txir_exit();
+
     if (rc == -1)
     {
 	input_exit();
         monitor_exit();
         lircd_exit();
 	lge_exit();
+	txir_exit();
         exit(EXIT_FAILURE);
     }
 
