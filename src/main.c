@@ -146,6 +146,9 @@ int main(int argc,char **argv)
             case 'C':
                 lirc_client_config_file = optarg;
                 break;
+            case 'T':
+                txir = optarg;
+                break;
             case 'L':
                 lge_port = optarg;
                 break;
