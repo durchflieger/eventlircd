@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <sys/un.h>       /* XSI */
 #include <syslog.h>       /* XSI */
 
@@ -66,12 +68,22 @@ int txir_send(const char *cmd)
 
 	if (txir_fd == -1)
 	{
-		txir_fd = open(txir_socket_path, O_RDWR|O_NONBLOCK);
+		int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		if (fd != -1) {
+			struct sockaddr_un addr;
+			memset(&addr, 0, sizeof(addr));
+			addr.sun_family = AF_UNIX;
+			strncpy(addr.sun_path, txir_socket_path, sizeof(addr.sun_path) - 1);
+			if (connect(fd, (struct sockaddr *) &addr, sizeof(addr)) != -1)
+				txir_fd = fd;
+		}
 		if (txir_fd == -1)
 		{
 			syslog(LOG_ERR, "could not open txir socket %s: %s\n", txir_socket_path, strerror(errno));
+			close(fd);
 			return -1;
 		}
+
 		if (monitor_client_add(txir_fd, &txir_handler, NULL) != 0)
 			return -1;
 	}
