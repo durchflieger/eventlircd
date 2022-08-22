@@ -88,7 +88,7 @@ int txir_send(const char *cmd)
 			return -1;
 	}
 
-	char buf[256];
+	char buf[1024];
 	ssize_t n = snprintf(buf, sizeof(buf), "%s\n", cmd);
 	if (write(txir_fd, buf, n) != n)
 	{
